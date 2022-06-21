@@ -10,7 +10,8 @@ torch.set_default_tensor_type('torch.cuda.FloatTensor')
 import utils.wsad_utils as utils
 from torch.nn import init
 from multiprocessing.dummy import Pool as ThreadPool
-from vit import VisionTransformer
+from vit_cls import VisionTransformer as VisionTransformer_cls
+from vit_atn import VisionTransformer as VisionTransformer_atn
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -67,23 +68,24 @@ class CO2(torch.nn.Module):
             nn.Conv1d(n_feature, n_feature, 1, padding=0),nn.LeakyReLU(0.2),nn.Dropout(dropout_ratio))
         
         
-        self.attention_v = nn.Sequential(nn.Conv1d(mid_dim, 512, 3, padding=1),
-                                       nn.LeakyReLU(0.2),
-                                       nn.Dropout(0.5),
-                                       nn.Conv1d(512, 512, 3, padding=1),
-                                       nn.LeakyReLU(0.2), nn.Conv1d(512, 1, 1),
-                                       nn.Dropout(0.5),
-                                       nn.Sigmoid())
-        self.attention_f = nn.Sequential(nn.Conv1d(mid_dim, 512, 3, padding=1),
-                                       nn.LeakyReLU(0.2),
-                                       nn.Dropout(0.5),
-                                       nn.Conv1d(512, 512, 3, padding=1),
-                                       nn.LeakyReLU(0.2), nn.Conv1d(512, 1, 1),
-                                       nn.Dropout(0.5),
-                                       nn.Sigmoid())
-        # self.attention_v = VisionTransformer(t_length=700,in_chans=1024,num_classes=1)
-        # self.attention_f = VisionTransformer(t_length=700,in_chans=1024,num_classes=1)
-        self.classifier = VisionTransformer(t_length=700,num_classes=n_class+1)
+        # self.attention_v = nn.Sequential(nn.Conv1d(mid_dim, 512, 3, padding=1),
+        #                                nn.LeakyReLU(0.2),
+        #                                nn.Dropout(0.5),
+        #                                nn.Conv1d(512, 512, 3, padding=1),
+        #                                nn.LeakyReLU(0.2), nn.Conv1d(512, 1, 1),
+        #                                nn.Dropout(0.5),
+        #                                nn.Sigmoid())
+        # self.attention_f = nn.Sequential(nn.Conv1d(mid_dim, 512, 3, padding=1),
+        #                                nn.LeakyReLU(0.2),
+        #                                nn.Dropout(0.5),
+        #                                nn.Conv1d(512, 512, 3, padding=1),
+        #                                nn.LeakyReLU(0.2), nn.Conv1d(512, 1, 1),
+        #                                nn.Dropout(0.5),
+        #                                nn.Sigmoid())
+        self.attention_v = VisionTransformer_atn(t_length=320,in_chans=1024)
+        self.attention_f = VisionTransformer_atn(t_length=320,in_chans=1024)
+        self.change_dim = nn.AdaptiveAvgPool1d(1)
+        self.classifier = VisionTransformer_cls(t_length=320,num_classes=n_class+1)
         # self.classifier = nn.Sequential(
         #     nn.Dropout(dropout_ratio),
         #     nn.Conv1d(embed_dim, embed_dim, 3, padding=1),nn.LeakyReLU(0.2),
@@ -102,20 +104,26 @@ class CO2(torch.nn.Module):
         audio_feat = audio_feature
 
         b,c,n=feat.size()
-        # feat = self.feat_encoder(x)
+        feat = self.feat_encoder(feat)
         # v_atn,vfeat = self.vAttn(feat[:,:1024,:],feat[:,1024:,:])
         # f_atn,ffeat = self.fAttn(feat[:,1024:,:],feat[:,:1024,:])
-        v_atn = self.attention_v(feat[:,:1024,:])
+        v_atn = self.attention_v(feat[:,:1024,:])#(B,T,T)
+        v_atn_orig = v_atn.view(b,n*n,1)
+        v_atn = self.change_dim(v_atn)
+
         f_atn = self.attention_f(feat[:,1024:,:])
-        x_atn = (f_atn+v_atn)/2
+        f_atn_orig = f_atn.view(b,n*n,1)
+        f_atn = self.change_dim(f_atn)
+        x_atn = ((f_atn+v_atn)/2).transpose(-1, -2)
         # nfeat = torch.cat((vfeat,ffeat),1)
         # nfeat = self.fusion(nfeat)
         nfeat = self.fusion(feat)
 
         x_cls = self.classifier(nfeat)
         # fg_mask, bg_mask,dropped_fg_mask = self.cadl(x_cls, x_atn, include_min=True)
-
-        return {'feat':feat.transpose(-1, -2), 'cas':x_cls.transpose(-1, -2), 'attn':x_atn.transpose(-1, -2), 'v_atn':v_atn.transpose(-1, -2),'f_atn':f_atn.transpose(-1, -2)}
+        return {'feat':feat.transpose(-1, -2), 'cas':x_cls.transpose(-1, -2), 'attn':x_atn.transpose(-1, -2),\
+            'v_atn_orig':v_atn_orig,'f_atn_orig':f_atn_orig,\
+            'v_atn':v_atn.transpose(-1, -2),'f_atn':f_atn.transpose(-1, -2)}
             #,fg_mask.transpose(-1, -2), bg_mask.transpose(-1, -2),dropped_fg_mask.transpose(-1, -2)
         # return att_sigmoid,att_logit, feat_emb, bag_logit, instance_logit
 
@@ -132,7 +140,10 @@ class CO2(torch.nn.Module):
         #element_logits：分类概率
         v_atn = outputs['v_atn']
         f_atn = outputs['f_atn']
-        mutual_loss=0.5*F.mse_loss(v_atn,f_atn.detach())+0.5*F.mse_loss(f_atn,v_atn.detach())
+        v_atn_orig = outputs['v_atn_orig']
+        f_atn_orig = outputs['f_atn_orig']
+        # mutual_loss=0.5*F.mse_loss(v_atn,f_atn.detach())+0.5*F.mse_loss(f_atn,v_atn.detach())
+        mutual_loss=0.5*F.mse_loss(v_atn_orig,f_atn_orig.detach())+0.5*F.mse_loss(f_atn_orig,v_atn_orig.detach())
         #detach：返回一个新的tensor，从当前计算图中分离下来的，但是仍指向原变量的存放位置,
         #不同之处只是requires_grad为false，得到的这个tensor永远不需要计算其梯度，不具有grad。
         #learning weight dynamic, lambda1 (1-lambda1) 
@@ -179,7 +190,8 @@ class CO2(torch.nn.Module):
         # output = torch.cosine_similarity(dropped_fg_feat, fg_feat, dim=1)
         # pdb.set_trace()
 
-        return total_loss
+        return total_loss,loss_mil_orig.mean(),loss_mil_supp.mean(),loss_3_supp_Contrastive,mutual_loss,\
+            (loss_norm+v_loss_norm+f_loss_norm)/3,(loss_guide+v_loss_guide+f_loss_guide)/3
 
     def topkloss(self,
                  element_logits,

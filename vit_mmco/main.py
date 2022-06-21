@@ -10,6 +10,8 @@ import random
 from test import test
 from train import train
 from tensorboard_logger import Logger
+# from torch.utils.tensorboard import SummaryWriter
+
 import options
 import numpy as np
 from torch.optim import lr_scheduler
@@ -51,6 +53,7 @@ if __name__ == '__main__':
    if os.path.exists('./logs/' + args.model_name):
       shutil.rmtree('./logs/' + args.model_name)
    logger = Logger('./logs/' + args.model_name)
+#    writer = SummaryWriter('./logs' + args.model_name)
    print(args)
    # model = Model(dataset.feature_size, dataset.num_class).to(device)
    model = getattr(model,args.use_model)(dataset.feature_size, dataset.num_class,opt=args).to(device)
@@ -68,8 +71,21 @@ if __name__ == '__main__':
    lrs = [args.lr, args.lr/5, args.lr/5/5]
    print(model)
    for itr in tqdm(range(args.max_iter)):
-      loss = train(itr, dataset, args, model, optimizer, logger, device)
+      loss,loss_mil_orig,loss_mil_supp,loss_3_supp_Contrastive,mutual_loss,loss_norm,loss_guide \
+          = train(itr, dataset, args, model, optimizer, logger, device)
       total_loss+=loss
+      info = { 'total_loss': total_loss/args.interval,
+               'loss_mil_orig':loss_mil_orig,
+               'loss_mil_supp':loss_mil_supp,
+               'loss_3_supp_Contrastive':loss_3_supp_Contrastive,
+               'mutual_loss':mutual_loss,
+               'loss_norm':loss_norm,
+               'loss_guide':loss_guide
+               }
+      
+      for tag,value in info.items():
+        logger.log_value(tag, value, itr)
+
       if itr % args.interval == 0 and not itr == 0:
          print('Iteration: %d, Loss: %.5f' %(itr, total_loss/args.interval))
          total_loss = 0

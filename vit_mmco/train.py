@@ -25,12 +25,14 @@ def train(itr, dataset, args, model, optimizer, logger, device):
     pseudo_label = None
    
     outputs = model(features,audio_features,seq_len=seq_len,is_training=True,itr=itr,opt=args)
-
-    total_loss=model.criterion(outputs,labels,seq_len=seq_len,device=device,logger=logger,opt=args,itr=itr,pairs_id=pairs_id,inputs=features)
+    
+    total_loss,loss_mil_orig,loss_mil_supp,loss_3_supp_Contrastive,mutual_loss,loss_norm,loss_guide \
+        = model.criterion(outputs,labels,seq_len=seq_len,device=device,logger=logger,opt=args,itr=itr,pairs_id=pairs_id,inputs=features)
     # print('Iteration: %d, Loss: %.3f' %(itr, total_loss.data.cpu().numpy()))
     optimizer.zero_grad()
     torch.autograd.set_detect_anomaly(True)
     total_loss.backward()
     optimizer.step()
-    return total_loss.data.cpu().numpy()
+    return total_loss.data.cpu().numpy(),loss_mil_orig.data.cpu().numpy(),loss_mil_supp.data.cpu().numpy(),\
+        loss_3_supp_Contrastive.data.cpu().numpy(),mutual_loss,loss_norm.data.cpu().numpy(),loss_guide.data.cpu().numpy()
 
