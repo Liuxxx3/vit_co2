@@ -60,15 +60,38 @@ class Mlp(nn.Module):
         drop_probs = to_2tuple(drop)
 
         self.fc1 = nn.Linear(in_features, out_features)
-        self.act = act_layer()
+        # self.act = act_layer()
         self.drop1 = nn.Dropout(drop)
         # self.fc2 = nn.Linear(hidden_features, out_features)
         # self.drop2 = nn.Dropout(drop_probs[1])
 
     def forward(self, x):
         x = self.fc1(x)
-        x = self.act(x)
+        # x = self.act(x)
         x = self.drop1(x)
+        # x = self.fc2(x)
+        # x = self.drop2(x)
+        return x
+
+class Mlp_Last(nn.Module):
+    """ MLP as used in Vision Transformer, MLP-Mixer and related networks
+    """
+    def __init__(self, in_features, out_features=1, act_layer=nn.Sigmoid, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        # hidden_features = hidden_features or in_features
+        drop_probs = to_2tuple(drop)
+
+        self.fc1 = nn.Linear(in_features, out_features)
+        self.act = act_layer()
+        # self.drop1 = nn.Dropout(drop)
+        # self.fc2 = nn.Linear(hidden_features, out_features)
+        # self.drop2 = nn.Dropout(drop_probs[1])
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        # x = self.drop1(x)
         # x = self.fc2(x)
         # x = self.drop2(x)
         return x
@@ -166,19 +189,21 @@ class Block_last(nn.Module):
             drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention_last(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        # self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
-        # self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-        # self.norm2 = norm_layer(dim)
-        # self.mlp = Mlp(in_features=dim, act_layer=act_layer, drop=drop)
-        # self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        # self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        self.mlp = Mlp_Last(in_features=dim, act_layer=act_layer, drop=drop)
+        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x):
-        x = self.attn(self.norm1(x))
-        return x
+        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
+        x_last =  self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+
+        return x_last
 
 class VisionTransformer(nn.Module):
     """ Vision Transformer
