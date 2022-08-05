@@ -1,7 +1,9 @@
 from __future__ import print_function
 import argparse
 import os
+from platform import architecture
 import torch
+import torch.nn as nn
 import model
 import multiprocessing as mp
 import wsad_dataset
@@ -17,6 +19,9 @@ import numpy as np
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 import shutil
+from model_rskp.memory import Memory
+from model_rskp.losses import CategoryCrossEntropy,Co2_Loss
+from eval.eval import ft_eval
 
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 def setup_seed(seed):
@@ -28,8 +33,16 @@ def setup_seed(seed):
    torch.cuda.manual_seed_all(seed)
    torch.backends.cudnn.benchmark = False
    torch.backends.cudnn.deterministic = True
-
 import torch.optim as optim
+def visible_gpu(gpus):
+    """
+        set visible gpu.
+        can be a single id, or a list
+        return a list of new gpus ids
+    """
+    gpus = [gpus] if isinstance(gpus, int) else list(gpus)
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(list(map(str, gpus)))
+    return list(range(len(gpus)))
 
 if __name__ == '__main__':
    pool = mp.Pool(5)
@@ -56,13 +69,19 @@ if __name__ == '__main__':
 #    writer = SummaryWriter('./logs' + args.model_name)
    print(args)
    # model = Model(dataset.feature_size, dataset.num_class).to(device)
-   model = getattr(model,args.use_model)(dataset.feature_size, dataset.num_class,opt=args).to(device)
-
+   model = getattr(model,args.use_model)(dataset.feature_size, dataset.num_class,opt=args)
+   args.gpu_ids = visible_gpu(args.gpus)
+   memory = Memory(args).to(device)
+   loss_spl = CategoryCrossEntropy(args.T)
+   co2_loss = Co2_Loss(args)
+   
+#    device_ids = [1]
+   model = nn.DataParallel(model).to(device)
    if args.pretrained_ckpt is not None:
       model.load_state_dict(torch.load(args.pretrained_ckpt))
 
 #    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-   optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+   optimizer = optim.AdamW(model.parameters(), lr=args.lr*(torch.cuda.device_count()), weight_decay=args.weight_decay)
    # optimizer = optim.SGD(model.parameters(), lr=args.lr,
                   #   momentum=args.momentum, weight_decay=args.weight_decay)
    # scheduler = lr_scheduler.StepLR(optimizer,step_size = args.lr_decay,gamma = 0.5)
@@ -71,8 +90,9 @@ if __name__ == '__main__':
    lrs = [args.lr, args.lr/5, args.lr/5/5]
    print(model)
    for itr in tqdm(range(args.max_iter)):
-      loss,loss_mil_orig,loss_mil_supp,loss_3_supp_Contrastive,mutual_loss,loss_norm,loss_guide \
-          = train(itr, dataset, args, model, optimizer, logger, device)
+      loss,loss_mil_orig,loss_mil_supp,loss_3_supp_Contrastive,mutual_loss,loss_norm,loss_guide,vid_spl_loss,mem \
+          = train(itr, memory,co2_loss,loss_spl,dataset, args, model, optimizer, logger, device)
+      memory = mem
       total_loss+=loss
       info = { 'total_loss': total_loss/args.interval,
                'loss_mil_orig':loss_mil_orig,
@@ -80,11 +100,20 @@ if __name__ == '__main__':
                'loss_3_supp_Contrastive':loss_3_supp_Contrastive,
                'mutual_loss':mutual_loss,
                'loss_norm':loss_norm,
-               'loss_guide':loss_guide
+               'loss_guide':loss_guide,
+               'vid_spl_loss':vid_spl_loss
                }
       
       for tag,value in info.items():
         logger.log_value(tag, value, itr)
+
+      if itr == args.warmup_epoch:
+         model.eval()
+         mu_queue, sc_queue, lbl_queue = ft_eval(dataset, model, args, device)
+         memory._init_queue(mu_queue, sc_queue, lbl_queue)
+         # import pdb;pdb.set_trace();
+         model.train()
+         args.lambda_s = 0.5
 
       if itr % args.interval == 0 and not itr == 0:
          print('Iteration: %d, Loss: %.5f' %(itr, total_loss/args.interval))

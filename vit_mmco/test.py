@@ -39,14 +39,12 @@ def test(itr, dataset, args, model, logger, device,pool):
             print('Testing test data point %d of %d' %(dataset.currenttestidx, len(dataset.testidx)))
 
         features,audio_features, labels,vn, done = dataset.load_data(is_training=False)
-
         seq_len = [features.shape[0]]
         if seq_len == 0:
             continue
         features = torch.from_numpy(features).float().to(device).unsqueeze(0)
-        audio_features = torch.from_numpy(audio_features).float().to(device).unsqueeze(0)
         with torch.no_grad():
-            outputs = model(Variable(features), Variable(audio_features),is_training=False,seq_len=seq_len)
+            outputs,_,_,_ = model(Variable(features),is_training=False)
             element_logits = outputs['cas']
             # proposals.append(PM.normal_threshold(vn,element_logits))
             # attn, att_logit,feat_embed, bag_logit, instance_logit = outputs
@@ -84,7 +82,7 @@ def test(itr, dataset, args, model, logger, device,pool):
         # dmap_detect.ground_truth.to_csv('temp/groundtruth.csv')
         dmap_detect.prediction = proposals
 
-        # proposals.to_csv("proposals_co3.csv")
+        proposals.to_csv("proposals_co2Transformer.csv")
         dmap = dmap_detect.evaluate()
     else:
         iou = [0.5, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90,0.95]
@@ -119,9 +117,11 @@ if __name__ == '__main__':
     args = options.parser.parse_args()
     device = torch.device("cuda")
     dataset = getattr(wsad_dataset,args.dataset)(args)
-
+    #best_CO2_transformer
     model = getattr(model,args.use_model)(dataset.feature_size, dataset.num_class,opt=args).to(device)
-    model.load_state_dict(torch.load('./ckpt/best_sota' + args.model_name + '.pkl'))
+    import torch.nn as  nn
+    model = nn.DataParallel(model).to(device)
+    model.load_state_dict(torch.load('./ckpt/best_' + args.model_name + '.pkl'))
     logger = Logger('./logs/test_' + args.model_name)
     pool = mp.Pool(5)
 
